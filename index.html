@@ -4711,6 +4711,8 @@ function loginSuccess(){
   showToast('✅ 登入成功！歡迎回來');
 }
 function doLogout(){
+  isLoggedIn=false;syncDesktopNav();goPage('landing');updateFabState();showToast('已登出');
+}
 
 // ========== OAuth Login Functions ==========
 async function getOAuthUrl(provider) {
@@ -4877,6 +4879,7 @@ if (window.location.pathname.includes('callback')) {
 
   isLoggedIn=false;syncDesktopNav();goPage('landing');
   updateFabState();showToast('已登出');
+}
 }
 function goRegStep(n){setRegStep(n);}
 function goRegStep2(){
