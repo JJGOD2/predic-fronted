@@ -4156,6 +4156,169 @@ var API_BASE = 'https://predic-backend.zeabur.app';
 var _authToken = localStorage.getItem('predic_token') || null;
 var _refreshToken = localStorage.getItem('predic_refresh') || null;
 
+// ========== OAuth Login Functions ==========
+async function getOAuthUrl(provider) {
+  var res = await fetch(API_BASE + '/v1/auth/oauth/' + provider, { method: 'POST' });
+  var r = await res.json();
+  if (r.ok) {
+    localStorage.setItem('oauth_state_' + provider, r.data.state);
+    window.location.href = r.data.url;
+  } else {
+    showToast('登入失敗，請稍後再試', 'err');
+  }
+}
+
+function doGoogleLogin() {
+  getOAuthUrl('google');
+}
+
+function doLineLogin() {
+  getOAuthUrl('line');
+}
+
+function handleOAuthCallback() {
+  var url = new URL(window.location.href);
+  var code = url.searchParams.get('code');
+  var state = url.searchParams.get('state');
+  var provider = null;
+  
+  if (window.location.pathname.includes('callback/google') || url.searchParams.get('state')) {
+    provider = 'google';
+  } else if (window.location.pathname.includes('callback/line')) {
+    provider = 'line';
+  }
+  
+  if (code && provider) {
+    var savedState = localStorage.getItem('oauth_state_' + provider);
+    if (savedState !== state) {
+      showToast('登入驗證失敗，請重試', 'err');
+      return;
+    }
+    
+    fetch(API_BASE + '/v1/auth/oauth/callback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider: provider, code: code, state: state })
+    })
+    .then(function(res) { return res.json(); })
+    .then(function(r) {
+      localStorage.removeItem('oauth_state_' + provider);
+      
+      if (r.ok) {
+        localStorage.setItem('authToken', r.data.accessToken);
+        localStorage.setItem('refreshToken', r.data.refreshToken);
+        localStorage.setItem('userData', JSON.stringify(r.data.user));
+        
+        window.history.replaceState({}, document.title, '/');
+        
+        checkSocialBinding(r.data.user);
+      } else {
+        showToast(r.error && r.error.message || '登入失敗', 'err');
+      }
+    })
+    .catch(function(err) {
+      showToast('登入發生錯誤', 'err');
+    });
+  }
+}
+
+function checkSocialBinding(user) {
+  if (!user.boundInstagram && !user.boundThreads) {
+    showSocialBindModal();
+  } else {
+    loginSuccess();
+  }
+}
+
+function showSocialBindModal() {
+  var modalHtml = 
+    '<div class="modal-overlay open" id="social-bind-modal">' +
+      '<div class="modal-box" style="max-width:480px">' +
+        '<h3 style="font-size:1.1rem;font-weight:800;margin-bottom:12px">綁定社群帳號</h3>' +
+        '<p style="color:var(--muted);font-size:.85rem;margin-bottom:20px;line-height:1.6">為了提案預測，請先綁定 Instagram 或 Threads 帳號。</p>' +
+        '<button class="social-btn" onclick="bindSocial('\\'instagram\\)" style="margin-bottom:8px;width:100%">' +
+          '<span>📷</span> 綁定 Instagram' +
+        '</button>' +
+        '<button class="social-btn" onclick="bindSocial('\\'threads\\)" style="margin-bottom:16px;width:100%">' +
+          '<span>💬</span> 綁定 Threads' +
+        '</button>' +
+        '<button class="btn-ghost" onclick="skipSocialBind()" style="width:100%">稍後再說</button>' +
+      '</div>' +
+    '</div>';
+  
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+}
+
+function bindSocial(platform) {
+  var username = prompt('請輸入你的 ' + (platform === 'instagram' ? 'Instagram' : 'Threads') + ' 使用者名稱（不含 @）：');
+  
+  if (!username) return;
+  
+  fetch(API_BASE + '/v1/auth/bind-social', {
+    method: 'POST',
+    headers: { 
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + localStorage.getItem('authToken')
+    },
+    body: JSON.stringify({
+      platform: platform,
+      platformId: username.toLowerCase(),
+      username: username
+    })
+  })
+  .then(function(res) { return res.json(); })
+  .then(function(r) {
+    if (r.ok) {
+      showToast('✅ ' + platform + ' 綁定成功！');
+      var modal = document.getElementById('social-bind-modal');
+      if (modal) modal.remove();
+      
+      var userData = JSON.parse(localStorage.getItem('userData') || '{}');
+      if (platform === 'instagram') {
+        userData.boundInstagram = true;
+      } else {
+        userData.boundThreads = true;
+      }
+      localStorage.setItem('userData', JSON.stringify(userData));
+      
+      loginSuccess();
+    } else {
+      showToast(r.error && r.error.message || '綁定失敗', 'err');
+    }
+  });
+}
+
+function skipSocialBind() {
+  var modal = document.getElementById('social-bind-modal');
+  if (modal) modal.remove();
+  loginSuccess();
+}
+
+function checkProposePermission(callback) {
+  if (!isLoggedIn) {
+    goPage('auth');
+    showToast('請先登入', 'err');
+    return;
+  }
+  
+  fetch(API_BASE + '/v1/auth/social-status', {
+    headers: { 'Authorization': 'Bearer ' + localStorage.getItem('authToken') }
+  })
+  .then(function(res) { return res.json(); })
+  .then(function(r) {
+    if (r.ok && r.data.canPropose) {
+      callback();
+    } else {
+      showSocialBindModal();
+    }
+  });
+}
+
+if (window.location.pathname.includes('callback')) {
+  handleOAuthCallback();
+}
+
+
 // 通用 API 呼叫
 async function api(path, opts) {
   opts = opts || {};
@@ -4712,164 +4875,6 @@ function loginSuccess(){
 }
 function doLogout(){
   isLoggedIn=false;syncDesktopNav();goPage('landing');updateFabState();showToast('已登出');
-}
-
-// ========== OAuth Login Functions ==========
-async function getOAuthUrl(provider) {
-  var res = await fetch(API_BASE + '/v1/auth/oauth/' + provider, { method: 'POST' });
-  var r = await res.json();
-  if (r.ok) {
-    localStorage.setItem('oauth_state_' + provider, r.data.state);
-    window.location.href = r.data.url;
-  } else {
-    showToast('登入失敗，請稍後再試', 'err');
-  }
-}
-
-function doGoogleLogin() {
-  getOAuthUrl('google');
-}
-
-function doLineLogin() {
-  getOAuthUrl('line');
-}
-
-function handleOAuthCallback() {
-  var url = new URL(window.location.href);
-  var code = url.searchParams.get('code');
-  var state = url.searchParams.get('state');
-  var provider = null;
-  
-  if (window.location.pathname.includes('callback/google') || url.searchParams.get('state')) {
-    provider = 'google';
-  } else if (window.location.pathname.includes('callback/line')) {
-    provider = 'line';
-  }
-  
-  if (code && provider) {
-    var savedState = localStorage.getItem('oauth_state_' + provider);
-    if (savedState !== state) {
-      showToast('登入驗證失敗，請重試', 'err');
-      return;
-    }
-    
-    fetch(API_BASE + '/v1/auth/oauth/callback', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider: provider, code: code, state: state })
-    })
-    .then(function(res) { return res.json(); })
-    .then(function(r) {
-      localStorage.removeItem('oauth_state_' + provider);
-      
-      if (r.ok) {
-        localStorage.setItem('authToken', r.data.accessToken);
-        localStorage.setItem('refreshToken', r.data.refreshToken);
-        localStorage.setItem('userData', JSON.stringify(r.data.user));
-        
-        window.history.replaceState({}, document.title, '/');
-        
-        checkSocialBinding(r.data.user);
-      } else {
-        showToast(r.error && r.error.message || '登入失敗', 'err');
-      }
-    })
-    .catch(function(err) {
-      showToast('登入發生錯誤', 'err');
-    });
-  }
-}
-
-function checkSocialBinding(user) {
-  if (!user.boundInstagram && !user.boundThreads) {
-    showSocialBindModal();
-  } else {
-    loginSuccess();
-  }
-}
-
-function showSocialBindModal() {
-  var modalHtml = 
-    '<div class="modal-overlay open" id="social-bind-modal">' +
-      '<div class="modal-box" style="max-width:480px">' +
-        '<h3 style="font-size:1.1rem;font-weight:800;margin-bottom:12px">綁定社群帳號</h3>' +
-        '<p style="color:var(--muted);font-size:.85rem;margin-bottom:20px;line-height:1.6">為了提案預測，請先綁定 Instagram 或 Threads 帳號。</p>' +
-        '<button class="social-btn" onclick="bindSocial(\'instagram\')" style="margin-bottom:8px;width:100%">' +
-          '<span>📷</span> 綁定 Instagram' +
-        '</button>' +
-        '<button class="social-btn" onclick="bindSocial(\'threads\')" style="margin-bottom:16px;width:100%">' +
-          '<span>💬</span> 綁定 Threads' +
-        '</button>' +
-        '<button class="btn-ghost" onclick="skipSocialBind()" style="width:100%">稍後再說</button>' +
-      '</div>' +
-    '</div>';
-  
-  document.body.insertAdjacentHTML('beforeend', modalHtml);
-}
-
-function bindSocial(platform) {
-  var username = prompt('請輸入你的 ' + (platform === 'instagram' ? 'Instagram' : 'Threads') + ' 使用者名稱（不含 @）：');
-  
-  if (!username) return;
-  
-  fetch(API_BASE + '/v1/auth/bind-social', {
-    method: 'POST',
-    headers: { 
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer ' + localStorage.getItem('authToken')
-    },
-    body: JSON.stringify({
-      platform: platform,
-      platformId: username.toLowerCase(),
-      username: username
-    })
-  })
-  .then(function(res) { return res.json(); })
-  .then(function(r) {
-    if (r.ok) {
-      showToast('✅ ' + platform + ' 綁定成功！');
-      var modal = document.getElementById('social-bind-modal');
-      if (modal) modal.remove();
-      
-      var userData = JSON.parse(localStorage.getItem('userData') || '{}');
-      if (platform === 'instagram') {
-        userData.boundInstagram = true;
-      } else {
-        userData.boundThreads = true;
-      }
-      localStorage.setItem('userData', JSON.stringify(userData));
-      
-      loginSuccess();
-    } else {
-      showToast(r.error && r.error.message || '綁定失敗', 'err');
-    }
-  });
-}
-
-function skipSocialBind() {
-  var modal = document.getElementById('social-bind-modal');
-  if (modal) modal.remove();
-  loginSuccess();
-}
-
-function checkProposePermission(callback) {
-  if (!isLoggedIn) {
-    goPage('auth');
-    showToast('請先登入', 'err');
-    return;
-  }
-  
-  fetch(API_BASE + '/v1/auth/social-status', {
-    headers: { 'Authorization': 'Bearer ' + localStorage.getItem('authToken') }
-  })
-  .then(function(res) { return res.json(); })
-  .then(function(r) {
-    if (r.ok && r.data.canPropose) {
-      callback();
-    } else {
-      showSocialBindModal();
-    }
-  });
 }
 
 // Initialize OAuth callback on page load
