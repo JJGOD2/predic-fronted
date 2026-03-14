@@ -4770,7 +4770,7 @@ function handleOAuthCallback() {
       localStorage.removeItem('oauth_state_' + provider);
       
       if (r.ok) {
-        localStorage.setItem('predic_token', r.data.accessToken);
+        localStorage.setItem('predic_token', r.data.accessToken); _authToken = r.data.accessToken;
         localStorage.setItem('predic_refresh', r.data.refreshToken);
         localStorage.setItem('userData', JSON.stringify(r.data.user));
         
