@@ -5341,6 +5341,10 @@ function goDashTab(id){
   if(id==='checkin')checkinInit();
   if(id==='tasks')tasksInit();
   if(id==='notif')renderNotifList();
+  if(id==='leaderboard'){
+    // 載入排行榜
+    loadLeaderboardFromAPI(true, 'score');
+  }
   if(id==='mgm'){
     var p=taskProgress['share']||{done:0,claimed:false};
     if(!p.claimed){p.done=1;taskProgress['share']=p;}
@@ -5448,6 +5452,13 @@ function switchLbTab(btn,type){
   const lbp=$('lb-profit'),lbw=$('lb-wr');
   if(lbp)lbp.style.display=type==='wr'?'none':'block';
   if(lbw)lbw.style.display=type==='wr'?'block':'none';
+  
+  // 根據標籤載入對應排行榜
+  if (type === 'profit' || type === 'score') {
+    loadLeaderboardFromAPI(true, 'score');
+  } else if (type === 'wr' || type === 'win_rate') {
+    loadWinRateLeaderboardFromAPI();
+  }
 }
 function updateFabState(){
   const login=document.querySelector('.fab-item[data-action="login"]');
@@ -7535,6 +7546,95 @@ function loadDashboardFromAPI(force) {
 
 var _notifInflight = false;
 var _notifLastAt = 0;
+
+// 從 API 載入排行榜
+var _lbInflight = false;
+var _lbLastAt = 0;
+
+function loadLeaderboardFromAPI(force, type) {
+  if (!isLoggedIn || !_authToken) return;
+  var now = Date.now();
+  if (!force && (_lbInflight || (now - _lbLastAt < 5000))) return; // cache 5s
+  _lbInflight = true;
+  _lbLastAt = now;
+  
+  // type: 'score' (積分榜) 或 'win_rate' (勝率榜) 或 'gem' (鑽石榜)
+  var lbType = type || 'score';
+  
+  api('/v1/users/leaderboard?type=' + lbType + '&limit=50').then(function(r) {
+    if (!r.ok || !r.data) return;
+    
+    // 轉換 API 資料格式為前端格式
+    LB = r.data.map(function(u, i) {
+      var val = u.value !== undefined ? u.value : (u.score || u.gem || 0);
+      return {
+        n: u.username || '匿名',
+        a: (u.username || '匿名').slice(0, 2),
+        pr: (u.win_rate !== undefined ? u.win_rate + '%' : '') || '',
+        pts: typeof val === 'number' ? val.toLocaleString() : String(val),
+        c: _getRankColor(i),
+        me: u.is_pro === true,
+        rank: u.rank || (i + 1)
+      };
+    });
+    
+    // 更新排行榜顯示
+    renderLeaderboardUI();
+  }).catch(function(err) {
+    console.error('[loadLeaderboardFromAPI]', err);
+  }).finally(function() { 
+    _lbInflight = false; 
+  });
+}
+
+function _getRankColor(rank) {
+  var colors = ['#fbbf24', '#94a3b8', '#f97316', '#00ff87', '#60a5fa', '#c084fc'];
+  return colors[rank] || '#64748b';
+}
+
+function renderLeaderboardUI() {
+  // 更新 Top 5
+  var mini = $('lb-mini');
+  if (mini) mini.innerHTML = lbHTML(LB.slice(0, 5));
+  
+  // 更新積分榜
+  var lbp = $('lb-profit');
+  if (lbp) lbp.innerHTML = lbHTML(LB);
+  
+  // 更新勝率榜 (需要重新呼叫 win_rate type)
+  var lbw = $('lb-wr');
+  if (lbw) {
+    // 先顯示目前的，等 API 回應後會更新
+    lbw.innerHTML = lbHTML(LB);
+  }
+}
+
+// 載入勝率榜
+function loadWinRateLeaderboardFromAPI() {
+  if (!isLoggedIn || !_authToken) return;
+  
+  api('/v1/users/leaderboard?type=win_rate&limit=50').then(function(r) {
+    if (!r.ok || !r.data) return;
+    
+    var wrLB = r.data.map(function(u, i) {
+      return {
+        n: u.username || '匿名',
+        a: (u.username || '匿名').slice(0, 2),
+        pr: (u.win_rate !== undefined ? u.win_rate + '%' : '0%'),
+        pts: String(u.settled_trades || 0) + ' 場',
+        c: _getRankColor(i),
+        me: u.is_pro === true,
+        rank: u.rank || (i + 1)
+      };
+    });
+    
+    var lbw = $('lb-wr');
+    if (lbw) lbw.innerHTML = lbHTML(wrLB);
+  }).catch(function(err) {
+    console.error('[loadWinRateLeaderboardFromAPI]', err);
+  });
+}
+
 // 從 API 載入通知
 
 function loadNotificationsFromAPI(force) {
