@@ -5635,25 +5635,62 @@ function renderShopBalances(){
   });
   var tc=$('lottery-ticket-count'); if(tc) tc.textContent=(userInventory.ticket||0)+' 張';
 }
-function buyItem(key,btn){
+// 前端 key 對應後端 item_key
+var ITEM_KEY_MAP = {
+  eye: 'prophet_eye',
+  double: 'double_card',
+  shield: 'shield_card',
+  time: 'lottery_ticket'
+};
+
+async function buyItem(key,btn){
   if(!isLoggedIn){goPage('auth');showToast('請先登入');return;}
   const item=SHOP_ITEMS[key];if(!item)return;
+  
+  // 先檢查餘額 (樂觀檢查，本地先攔)
   if(userGem<item.cost){
     showToast('💎 鑽石不足！請先儲值','err');
     setTimeout(function(){switchShopTab(null,'tab-recharge');},200);
     return;
   }
-  userGem-=item.cost;
-  userInventory[key]=(userInventory[key]||0)+1;
-  updateNavCurrency();
-  renderInventory();
-  renderShopBalances();
-  if(btn){
-    btn.textContent='✓ 購買成功';btn.className='shop-buy-btn bought';btn.disabled=true;
-    setTimeout(function(){btn.textContent='立即購買';btn.className='shop-buy-btn';btn.disabled=false;},1800);
+  
+  // 按鈕 loading 狀態
+  if(btn){btn.textContent='處理中...';btn.disabled=true;}
+  
+  try {
+    // 呼叫後端 API
+    const itemKey = ITEM_KEY_MAP[key];
+    const result = await api('/v1/shop/buy', {
+      method: 'POST',
+      body: { item_key: itemKey, quantity: 1 }
+    });
+    
+    if(result && result.ok !== false){
+      // API 成功，更新本地狀態
+      const newGem = result.data?.balances?.gem ?? (userGem - item.cost);
+      userGem = newGem;
+      userInventory[key] = (userInventory[key]||0) + 1;
+      
+      updateNavCurrency();
+      renderInventory();
+      renderShopBalances();
+      
+      if(btn){
+        btn.textContent='✓ 購買成功';btn.className='shop-buy-btn bought';btn.disabled=true;
+        setTimeout(function(){btn.textContent='立即購買';btn.className='shop-buy-btn';btn.disabled=false;},1800);
+      }
+      
+      addNotif('🛒','ni-yellow','購買成功：'+item.name,'扣除 💎'+item.cost+'，已加入道具背包。');
+      showToast('🎒 '+item.name+' 已加入背包！剩餘 💎 '+userGem,'gold');
+    } else {
+      // API 失敗
+      throw new Error(result?.error?.message || '購買失敗');
+    }
+  } catch(err) {
+    console.error('[buyItem]', err);
+    showToast('❌ 購買失敗：'+(err.message||'請稍後再試'),'err');
+    if(btn){btn.textContent='立即購買';btn.className='shop-buy-btn';btn.disabled=false;}
   }
-  addNotif('🛒','ni-yellow','購買成功：'+item.name,'扣除 💎'+item.cost+'，已加入道具背包。');
-  showToast('🎒 '+item.name+' 已加入背包！剩餘 💎 '+userGem,'gold');
 }
 function renderInventory(){
   const grid=$('inv-grid');if(!grid)return;
@@ -5683,21 +5720,57 @@ function renderInventory(){
   grid.innerHTML=html;
   renderShopBalances();
 }
-function useItem(key){
+async function useItem(key, marketId){
   const item=SHOP_ITEMS[key];
-  if(!item||!userInventory[key])return;
-  userInventory[key]--;
-  renderInventory();
-  renderShopBalances();
-  const msgs={eye:'🔮 先知之眼已施放！可查看大神分佈',
-    double:'⚡ 積分加倍卡已啟動！本場獲勝積分 ×2',
-    shield:'🛡️ 防損護盾已開啟！落敗可返還 50%',
-    time:'⏳ 時空倒流已施放！可修改一次預測'};
-  showToast(msgs[key]||'道具已使用','gold');
-  if(key==='eye'&&isPro){
-    var p=taskProgress['pro_eye']||{done:0,claimed:false};
-    if(!p.claimed){p.done=Math.min((p.done||0)+1,1);taskProgress['pro_eye']=p;}
-    updateTasksNavDot();
+  if(!item||!userInventory[key]){
+    showToast('❌ 道具不足','err');
+    return;
+  }
+  
+  // 從 URL 取得當前市場 ID (如果有)
+  if(!marketId){
+    const urlMatch = window.location.hash?.match(/\/markets\/([^/?#]+)/);
+    if(urlMatch) marketId = urlMatch[1];
+  }
+  
+  try {
+    const itemKey = ITEM_KEY_MAP[key];
+    const body = { item_key: itemKey };
+    if(marketId) body.market_id = marketId;
+    
+    const result = await api('/v1/shop/use-item', {
+      method: 'POST',
+      body: body
+    });
+    
+    if(result && result.ok !== false){
+      userInventory[key]--;
+      renderInventory();
+      renderShopBalances();
+      
+      const msgs={eye:'🔮 先知之眼已施放！可查看大神分佈',
+        double:'⚡ 積分加倍卡已啟動！本場獲勝積分 ×2',
+        shield:'🛡️ 防損護盾已開啟！落敗可返還 50%',
+        time:'⏳ 時空倒流已施放！可修改一次預測'};
+      showToast(msgs[key]||'道具已使用','gold');
+      
+      // 先知之眼效果：顯示大神分佈 hint
+      if(key === 'eye' && result.data?.effect?.yes_pct_snapshot){
+        const hint = result.data.effect.hint || '社群傾向 ' + (result.data.effect.yes_pct_snapshot >= 50 ? '是' : '否');
+        showToast('🔮 '+hint, 'gold');
+      }
+      
+      if(key==='eye'&&isPro){
+        var p=taskProgress['pro_eye']||{done:0,claimed:false};
+        if(!p.claimed){p.done=Math.min((p.done||0)+1,1);taskProgress['pro_eye']=p;}
+        updateTasksNavDot();
+      }
+    } else {
+      throw new Error(result?.error?.message || '使用失敗');
+    }
+  } catch(err) {
+    console.error('[useItem]', err);
+    showToast('❌ '+ (err.message||'使用失敗，請稍後再試'),'err');
   }
 }
 function selectRecharge(el){
@@ -5715,17 +5788,31 @@ function doRecharge(){
   addNotif('💎','ni-green','儲值成功！獲得 💎'+gem,'鑽石已存入帳戶，可前往商城購買道具。');
   showToast('🎉 儲值成功！獲得 💎 '+gem+' 鑽石（'+price+'）','gold');
 }
-function exchangeTicket(){
+async function exchangeTicket(){
   if(!isLoggedIn){goPage('auth');showToast('請先登入');return;}
-  if(userScore < 200){showToast('🪙 積分不足，需 200 積分','err');return;}
-  userScore -= 200;
-  userInventory.ticket = (userInventory.ticket||0) + 1;
-  lotteryState.tickets = userInventory.ticket;
-  updateNavCurrency();
-  renderShopBalances();
-  renderInventory();
-  addNotif('🎫','ni-yellow','兌換成功：抽獎券 +1','已扣除 200 🪙，可前往抽獎中心使用。');
-  showToast('🎫 已兌換 1 張抽獎券','gold');
+  
+  try {
+    const result = await api('/v1/shop/tickets/exchange', {
+      method: 'POST',
+      body: { quantity: 1 }
+    });
+    
+    if(result && result.ok !== false){
+      userScore = result.data?.balances?.score ?? userScore;
+      userInventory.ticket = result.data?.balances?.lottery_tickets ?? (userInventory.ticket||0) + 1;
+      lotteryState.tickets = userInventory.ticket;
+      updateNavCurrency();
+      renderShopBalances();
+      renderInventory();
+      addNotif('🎫','ni-yellow','兌換成功：抽獎券 +1','已扣除 200 🪙，可前往抽獎中心使用。');
+      showToast('🎫 已兌換 1 張抽獎券','gold');
+    } else {
+      throw new Error(result?.error?.message || '兌換失敗');
+    }
+  } catch(err) {
+    console.error('[exchangeTicket]', err);
+    showToast('❌ '+ (err.message||'兌換失敗，請稍後再試'),'err');
+  }
 }
 function goLotteryCenter(){
   goPage('shop');
