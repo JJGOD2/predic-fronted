@@ -5529,9 +5529,55 @@ function getFilteredComments(marketId){
   if(cmtFilter==='no')return list.filter(c=>c.dir==='no');
   return list;
 }
-function renderComments(marketId){
+// 從 API 載入評論
+var _cmtCache = {};
+
+function loadCommentsFromAPI(marketId, direction) {
+  if (!marketId) return Promise.resolve([]);
+  
+  // 檢查緩存 (cache 30秒)
+  var cacheKey = marketId + '_' + (direction || 'all');
+  var cached = _cmtCache[cacheKey];
+  if (cached && (Date.now() - cached.ts < 30000)) {
+    return Promise.resolve(cached.data);
+  }
+  
+  var url = '/v1/markets/' + encodeURIComponent(marketId) + '/comments?limit=50';
+  if (direction) url += '&direction=' + direction;
+  
+  return api(url).then(function(r) {
+    if (r && r.ok !== false && r.data) {
+      _cmtCache[cacheKey] = { data: r.data, ts: Date.now() };
+      return r.data;
+    }
+    return [];
+  }).catch(function(err) {
+    console.error('[loadCommentsFromAPI]', err);
+    return [];
+  });
+}
+
+// 發表評論到 API
+function postCommentToAPI(marketId, content, direction, parentId) {
+  if (!isLoggedIn) {
+    return Promise.reject(new Error('請先登入'));
+  }
+  
+  return api('/v1/markets/' + encodeURIComponent(marketId) + '/comments', {
+    method: 'POST',
+    body: {
+      content: content,
+      direction: direction,
+      parent_id: parentId || null
+    }
+  });
+}
+
+function renderComments(marketId, commentsData) {
   const el=$('comments-list');if(!el)return;
-  const filtered=getFilteredComments(marketId);
+  
+  // 如果沒有傳入資料，從本地取得
+  var filtered = commentsData || getFilteredComments(marketId);
   const visible=filtered.slice(0,cmtVisibleCount);
   if(!visible.length){
     el.innerHTML='<div style="text-align:center;color:var(--muted);padding:24px;font-size:.85rem">暫無留言，成為第一個分享看法的人！</div>';
@@ -5539,20 +5585,30 @@ function renderComments(marketId){
     updateCommentCount(marketId);return;
   }
   el.innerHTML=visible.map((cmt,idx)=>{
+    // 處理 API 回傳的格式
+    var userName = cmt.user?.username || cmt.user || cmt.n || '匿名';
+    var avatar = cmt.user?.username ? cmt.user.username.slice(0, 2) : (cmt.av || userName.slice(0, 2));
+    var color = cmt.color || '#64748b';
+    var dir = cmt.direction || cmt.dir || 'yes';
+    var text = cmt.content || cmt.text || '';
+    var likes = cmt.likes || 0;
+    var time = cmt.time || cmt.created_at || '剛剛';
+    var isMe = cmt.isMe || false;
+    
     const replyHtml=cmt.replyTo?`<div class="cmt-reply-preview">↩ ${cmt.replyTo}：${cmt.replyPreview}…</div>`:'';
-    const meBadge=cmt.isMe?'<span style="font-size:.65rem;background:rgba(0,255,135,.15);color:var(--green);padding:1px 5px;border-radius:4px;margin-left:4px">我</span>':'';
+    const meBadge=isMe?'<span style="font-size:.65rem;background:rgba(0,255,135,.15);color:var(--green);padding:1px 5px;border-radius:4px;margin-left:4px">我</span>':'';
     return `<div class="comment-item" id="cmt-item-${idx}">
-      <div class="cmt-av" style="background:${cmt.color}20;color:${cmt.color}">${cmt.av}</div>
+      <div class="cmt-av" style="background:${color}20;color:${color}">${avatar}</div>
       <div class="cmt-body">
         <div class="cmt-meta">
-          <span class="cmt-name">${cmt.user}${meBadge}</span>
-          <span class="cmt-dir-tag ${cmt.dir}">${cmt.dir==='yes'?'📈 看多':'📉 看空'}</span>
-          <span class="cmt-time">${cmt.time}</span>
+          <span class="cmt-name">${userName}${meBadge}</span>
+          <span class="cmt-dir-tag ${dir}">${dir==='yes'?'📈 看多':'📉 看空'}</span>
+          <span class="cmt-time">${time}</span>
         </div>
         ${replyHtml}
-        <div class="cmt-text">${cmt.text}</div>
+        <div class="cmt-text">${text}</div>
         <div class="cmt-actions">
-          <button class="cmt-like-btn${cmt.liked?' liked':''}" onclick="toggleLike(${JSON.stringify(marketId)},${idx},this)">${cmt.liked?'❤️':'🤍'} ${cmt.likes}</button>
+          <button class="cmt-like-btn${cmt.liked?' liked':''}" onclick="toggleLike(${JSON.stringify(marketId)},${idx},this)">${cmt.liked?'❤️':'🤍'} ${likes}</button>
           <button class="cmt-reply-btn" onclick="showReply(${JSON.stringify(marketId)},${idx})">💬 回覆</button>
         </div>
       </div>
@@ -5562,28 +5618,86 @@ function renderComments(marketId){
   if(lmb)lmb.style.display=filtered.length>cmtVisibleCount?'flex':'none';
   updateCommentCount(marketId);
 }
-function filterComments(btn,f){
+async function filterComments(btn,f){
   cmtFilter=f;
   document.querySelectorAll('.cmt-filter-btn').forEach(b=>b.classList.toggle('active',b.dataset.cfilter===f));
-  if(activeMkt)renderComments(activeMkt.id);
+  if(activeMkt) {
+    // 從 API 重新載入評論
+    var direction = (f === 'yes' || f === 'no') ? f : null;
+    var comments = await loadCommentsFromAPI(activeMkt.id, direction);
+    if (comments && comments.length > 0) {
+      var apiComments = comments.map(function(c) {
+        return {
+          id: c.id,
+          user: c.user?.username || '匿名',
+          av: (c.user?.username || '匿名').slice(0, 2),
+          color: '#64748b',
+          dir: c.direction || 'yes',
+          text: c.content || '',
+          likes: c.likes || 0,
+          time: timeAgo(c.created_at),
+          liked: false,
+          isMe: c.user?.id === USER?.id
+        };
+      });
+      COMMENT_DATA[activeMkt.id] = apiComments;
+      renderComments(activeMkt.id, apiComments);
+    } else {
+      renderComments(activeMkt.id);
+    }
+  }
 }
-function submitComment(){
+async function submitComment(){
   if(!isLoggedIn){goPage('auth');return;}
   const ta=$('cmt-textarea');
   if(!ta||!ta.value.trim()){showToast('請輸入留言內容','err');return;}
   const text=ta.value.trim();
   const mktId=activeMkt?activeMkt.id:1;
-  if(!COMMENT_DATA[mktId])COMMENT_DATA[mktId]=[];
-  COMMENT_DATA[mktId].unshift({user:'陳Aiwen',av:'陳A',color:'#00ff87',
-    dir:cmtDir,text,likes:0,time:'剛剛',liked:false,isMe:true});
-  ta.value='';cmt_count(ta);
-  renderComments(mktId);updateCommentCount(mktId);
-  addNotif('💬','ni-blue','留言發布成功','你在「'+(activeMkt?activeMkt.q.slice(0,16)+'…':'題目')+'」發表了看法');
-  // Task progress
-  var p=taskProgress['comment']||{done:0,claimed:false};
-  if(!p.claimed){p.done=Math.min((p.done||0)+1,1);taskProgress['comment']=p;}
-  updateTasksNavDot();
-  showToast('💬 留言已發布！');
+  
+  // 顯示 loading
+  ta.disabled = true;
+  
+  try {
+    const result = await postCommentToAPI(mktId, text, cmtDir, null);
+    
+    if (result && result.ok !== false) {
+      // API 成功，更新本地緩存
+      if(!COMMENT_DATA[mktId])COMMENT_DATA[mktId]=[];
+      const newCmt = {
+        id: result.data?.id || Date.now(),
+        user: { username: USER?.username || '你' },
+        direction: cmtDir,
+        content: text,
+        likes: 0,
+        time: '剛剛',
+        liked: false,
+        isMe: true
+      };
+      COMMENT_DATA[mktId].unshift(newCmt);
+      
+      ta.value='';cmt_count(ta);
+      renderComments(mktId);updateCommentCount(mktId);
+      addNotif('💬','ni-blue','留言發布成功','你在「'+(activeMkt?activeMkt.q.slice(0,16)+'…':'題目')+'」發表了看法');
+      
+      // 清除評論緩存，強制重新載入
+      Object.keys(_cmtCache).forEach(k => {
+        if (k.startsWith(mktId + '_')) delete _cmtCache[k];
+      });
+      
+      // Task progress
+      var p=taskProgress['comment']||{done:0,claimed:false};
+      if(!p.claimed){p.done=Math.min((p.done||0)+1,1);taskProgress['comment']=p;}
+      updateTasksNavDot();
+      showToast('💬 留言已發布！');
+    } else {
+      throw new Error(result?.error?.message || '發布失敗');
+    }
+  } catch(err) {
+    console.error('[submitComment]', err);
+    showToast('❌ '+ (err.message || '發布失敗，請稍後再試'), 'err');
+  } finally {
+    ta.disabled = false;
+  }
 }
 function toggleLike(mktId,idx,btn){
   if(!isLoggedIn){showToast('登入後才能點讚','err');return;}
@@ -7491,7 +7605,42 @@ function loadMarketDetailFromAPI(marketId) {
       activeMkt._apiHistory = m.probHistory;
       drawDetailChart(detailRange || '1W');
     }
+    
+    // 載入評論
+    loadCommentsFromAPI(target.id || marketId).then(function(comments) {
+      if (comments && comments.length > 0) {
+        // 將 API 資料轉換為本地格式
+        var apiComments = comments.map(function(c) {
+          return {
+            id: c.id,
+            user: c.user?.username || '匿名',
+            av: (c.user?.username || '匿名').slice(0, 2),
+            color: '#64748b',
+            dir: c.direction || 'yes',
+            text: c.content || '',
+            likes: c.likes || 0,
+            time: timeAgo(c.created_at),
+            liked: false,
+            isMe: c.user?.id === USER?.id
+          };
+        });
+        COMMENT_DATA[target.id || marketId] = apiComments;
+        renderComments(target.id || marketId, apiComments);
+      }
+    });
   });
+}
+
+// 時間格式化輔助函數
+function timeAgo(dateStr) {
+  if (!dateStr) return '剛剛';
+  var diff = Date.now() - new Date(dateStr).getTime();
+  var mins = Math.max(1, Math.floor(diff / 60000));
+  if (mins < 60) return mins + '分鐘前';
+  var hours = Math.floor(mins / 60);
+  if (hours < 24) return hours + '小時前';
+  var days = Math.floor(hours / 24);
+  return days + '天前';
 }
 
 // 從 API 載入儀表板資料
