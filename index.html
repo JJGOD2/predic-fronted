@@ -6595,7 +6595,7 @@ function loadLotteryLogsFromAPI() {
   });
 }
 
-function lotteryInit(){
+async function lotteryInit(){
   var pg=$('prize-grid');if(!pg)return;
   
   // 嘗試從 API 載入獎品
