@@ -5770,10 +5770,35 @@ var ITEM_KEY_MAP = {
 
 async function buyItem(key,btn){
   if(!isLoggedIn){goPage('auth');showToast('請先登入');return;}
-  const item=SHOP_ITEMS[key];if(!item)return;
+  
+  // 嘗試從 API 獲取物品資訊，如果沒有則使用本地
+  var item = null;
+  var itemPrice = 0;
+  var itemName = '';
+  
+  // 嘗試從 API cache 獲取
+  if (_shopItemsCache) {
+    var apiItem = _shopItemsCache.find(function(i) { return ITEM_KEY_MAP[key] === i.key; });
+    if (apiItem) {
+      item = { name: apiItem.name, cost: apiItem.price };
+      itemPrice = apiItem.price || 0;
+      itemName = apiItem.name || '';
+    }
+  }
+  
+  // 如果沒有 API 数据，使用本地
+  if (!item) {
+    item = SHOP_ITEMS[key];
+    if (!item) {
+      showToast('❌ 找不到該商品', 'err');
+      return;
+    }
+    itemPrice = item.cost || 0;
+    itemName = item.name || '';
+  }
   
   // 先檢查餘額 (樂觀檢查，本地先攔)
-  if(userGem<item.cost){
+  if(userGem < itemPrice){
     showToast('💎 鑽石不足！請先儲值','err');
     setTimeout(function(){switchShopTab(null,'tab-recharge');},200);
     return;
@@ -5792,7 +5817,7 @@ async function buyItem(key,btn){
     
     if(result && result.ok !== false){
       // API 成功，更新本地狀態
-      const newGem = result.data?.balances?.gem ?? (userGem - item.cost);
+      const newGem = result.data?.balances?.gem ?? (userGem - itemPrice);
       userGem = newGem;
       userInventory[key] = (userInventory[key]||0) + 1;
       
@@ -5800,13 +5825,17 @@ async function buyItem(key,btn){
       renderInventory();
       renderShopBalances();
       
+      // 更新持有數量顯示
+      var qtyEl = $('shop-qty-' + key);
+      if (qtyEl) qtyEl.textContent = userInventory[key];
+      
       if(btn){
         btn.textContent='✓ 購買成功';btn.className='shop-buy-btn bought';btn.disabled=true;
         setTimeout(function(){btn.textContent='立即購買';btn.className='shop-buy-btn';btn.disabled=false;},1800);
       }
       
-      addNotif('🛒','ni-yellow','購買成功：'+item.name,'扣除 💎'+item.cost+'，已加入道具背包。');
-      showToast('🎒 '+item.name+' 已加入背包！剩餘 💎 '+userGem,'gold');
+      addNotif('🛒','ni-yellow','購買成功：'+itemName,'扣除 💎'+itemPrice+'，已加入道具背包。');
+      showToast('🎒 '+itemName+' 已加入背包！剩餘 💎 '+userGem,'gold');
     } else {
       // API 失敗
       throw new Error(result?.error?.message || '購買失敗');
@@ -5943,6 +5972,70 @@ function goLotteryCenter(){
   goPage('shop');
   setTimeout(function(){switchShopTab(null,'tab-lottery'); lotteryInit();},60);
 }
+// 從 API 載入商店物品
+var _shopItemsCache = null;
+var _shopItemsLastAt = 0;
+
+function loadShopItemsFromAPI(force) {
+  var now = Date.now();
+  if (!force && _shopItemsCache && (now - _shopItemsLastAt < 30000)) {
+    return Promise.resolve(_shopItemsCache);
+  }
+  
+  return api('/v1/shop/items?type=item').then(function(r) {
+    if (r && r.ok !== false && r.data && r.data.items) {
+      _shopItemsCache = r.data.items;
+      _shopItemsLastAt = now;
+      return r.data.items;
+    }
+    return [];
+  }).catch(function(err) {
+    console.error('[loadShopItemsFromAPI]', err);
+    return [];
+  });
+}
+
+// 渲染商店物品
+function renderShopItems(items) {
+  var grid = $('shop-items-grid');
+  if (!grid) return;
+  
+  // 將 API 資料轉換為前端格式
+  var html = items.map(function(item) {
+    var key = item.key;
+    var name = item.name || '';
+    var desc = item.description || '';
+    var price = item.price || 0;
+    var owned = item.owned_quantity || 0;
+    
+    // 對應到本地 key
+    var localKey = null;
+    for (var k in ITEM_KEY_MAP) {
+      if (ITEM_KEY_MAP[k] === key) {
+        localKey = k;
+        break;
+      }
+    }
+    if (!localKey) return '';
+    
+    var icon = { prophet_eye: '👁️', double_card: '⚡', shield_card: '🛡️', lottery_ticket: '⏳' }[key] || '🎁';
+    var badge = key === 'prophet_eye' ? '<span class="shop-badge badge-best">最熱賣</span>' : 
+                key === 'double_card' ? '<span class="shop-badge badge-hot">推薦</span>' : '';
+    
+    return '<div class="shop-item' + (key === 'double_card' ? ' featured' : '') + '" data-item-key="' + localKey + '">' +
+      badge +
+      '<span class="shop-icon">' + icon + '</span>' +
+      '<div class="shop-name">' + name + '</div>' +
+      '<div class="shop-desc">' + desc + '</div>' +
+      '<div class="shop-price">💎 ' + price + '</div>' +
+      '<div class="shop-item-qty">目前持有 <strong id="shop-qty-' + localKey + '">' + owned + '</strong> 個</div>' +
+      '<button class="shop-buy-btn" onclick="buyItem(\'' + localKey + '\',this)">立即購買</button>' +
+    '</div>';
+  }).join('');
+  
+  grid.innerHTML = html;
+}
+
 function switchShopTab(btn,tabId){
   document.querySelectorAll('.shop-tab').forEach(function(b){
     b.classList.toggle('active', b.dataset.shopTab===tabId);
@@ -5952,6 +6045,16 @@ function switchShopTab(btn,tabId){
   });
   if(btn && btn.classList) btn.classList.add('active');
   if(tabId==='tab-lottery') lotteryInit();
+  
+  // 載入商店物品
+  if(tabId==='tab-items' && isLoggedIn) {
+    loadShopItemsFromAPI().then(function(items) {
+      if (items && items.length > 0) {
+        renderShopItems(items);
+      }
+    });
+  }
+  
   renderShopBalances();
 }
 
