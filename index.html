@@ -4549,6 +4549,18 @@ function goPage(id){
   document.body.classList.toggle('landing-ticker', id==='landing');
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   const pg=$('page-'+id);if(pg)pg.classList.add('active');
+  
+  // 重新觸发动画 - 先移除再加入 animation
+  if(id === 'landing') {
+    setTimeout(function() {
+      var fadeElements = pg.querySelectorAll('.lv-fade');
+      fadeElements.forEach(function(el) {
+        el.style.animation = 'none';
+        el.offsetHeight; // trigger reflow
+        el.style.animation = null;
+      });
+    }, 10);
+  }
   document.querySelectorAll('.nav-link').forEach(l=>l.classList.remove('active'));
   if(id==='markets'){$('nav-markets-btn').classList.add('active');$('nav-search-wrap').style.display='block';}
   else if($('nav-search-wrap'))$('nav-search-wrap').style.display='none';
@@ -4688,14 +4700,26 @@ function doLogin(){
   var btn=$('login-submit-btn');
   if(btn){btn.disabled=true;btn.textContent='登入中...';}
   api('/v1/auth/login',{method:'POST',body:{email:em.value,password:pw.value}}).then(function(r){
+    console.log('[Login] Response:', r);
     if(btn){btn.disabled=false;btn.textContent='登入';}
     if(!r.ok){
-      showToast('❌ '+(r.error&&r.error.message||'登入失敗'),'err');
+      var errMsg = r.error?.message || r.error?.code || '登入失敗';
+      showToast('❌ ' + errMsg, 'err');
+      console.error('[Login] Error:', r.error);
+      return;
+    }
+    if(!r.data || !r.data.access_token){
+      showToast('❌ 登入回應格式錯誤，請聯繫客服', 'err');
+      console.error('[Login] No access_token in response:', r.data);
       return;
     }
     _saveTokens(r.data.access_token, r.data.refresh_token);
     _applyUser(r.data.user);
     loginSuccess();
+  }).catch(function(err) {
+    if(btn){btn.disabled=false;btn.textContent='登入';}
+    console.error('[Login] Exception:', err);
+    showToast('❌ 登入發生錯誤，請稍後再試', 'err');
   });
 }
 function loginSuccess(){
