@@ -5337,7 +5337,26 @@ function goDashTab(id){
   if(id==='overview'){drawPnl('1M');renderPositionsMini();renderOverviewCheckin();}
   if(id==='positions')renderPositionsTable();
   if(id==='items')renderInventory();
-  if(id==='awards')renderAwards();
+  if(id==='awards'){
+    // 載入抽獎紀錄
+    loadLotteryLogsFromAPI().then(function(logs) {
+      if (logs && logs.length > 0) {
+        // 轉換 API logs 為本地格式
+        userAwards = logs.map(function(l, idx) {
+          return {
+            id: l.id || idx,
+            icon: l.prize?.icon || '🎁',
+            name: l.prize?.name || '獎品',
+            desc: l.prize?.description || '',
+            claimed: true,
+            time: timeAgo(l.drawn_at)
+          };
+        });
+      }
+      renderAwards();
+    });
+    renderAwards();
+  }
   if(id==='checkin')checkinInit();
   if(id==='tasks')tasksInit();
   if(id==='notif')renderNotifList();
@@ -5492,13 +5511,30 @@ function updateNotifBadge(){
   const sbCount=$('sb-badge-notif');
   if(sbCount){sbCount.textContent=count;sbCount.style.display=count>0?'inline':'none';}
 }
-function markNotifRead(id){
+async function markNotifRead(id){
   const n=NOTIFS.find(x=>x.id===id);if(n)n.u=false;
   updateNotifBadge();renderNotifList();
+  
+  // 呼叫 API 標記為已讀
+  if (isLoggedIn && _authToken && id) {
+    api('/v1/notifications/' + encodeURIComponent(id) + '/read', { 
+      method: 'POST' 
+    }).catch(function(err) {
+      console.error('[markNotifRead]', err);
+    });
+  }
 }
-function markAllRead(){
+async function markAllRead(){
   NOTIFS.forEach(n=>n.u=false);
-  updateNotifBadge();renderNotifList();
+  updateNotifBadge();
+  renderNotifList();
+  
+  // 呼叫 API 標記全部為已讀
+  if (isLoggedIn && _authToken) {
+    api('/v1/notifications/read-all', { method: 'POST' }).catch(function(err) {
+      console.error('[markAllRead]', err);
+    });
+  }
 }
 function renderNotifList(){
   const nl=$('notif-list');if(!nl)return;
@@ -6388,38 +6424,125 @@ function updateTasksNavDot() {
 // ══════════════════════════════════════════
 // LOTTERY
 // ══════════════════════════════════════════
+// 從 API 載入抽獎獎品
+var _lotteryPrizesCache = null;
+
+function loadLotteryPrizesFromAPI() {
+  if (_lotteryPrizesCache) {
+    return Promise.resolve(_lotteryPrizesCache);
+  }
+  
+  return api('/v1/shop/lottery/prizes').then(function(r) {
+    if (r && r.ok !== false && r.data && r.data.prizes) {
+      _lotteryPrizesCache = r.data.prizes;
+      return r.data.prizes;
+    }
+    return PRIZES; // fallback to local
+  }).catch(function(err) {
+    console.error('[loadLotteryPrizesFromAPI]', err);
+    return PRIZES;
+  });
+}
+
+async // 從 API 載入抽獎紀錄
+var _lotteryLogsCache = null;
+
+function loadLotteryLogsFromAPI() {
+  if (!isLoggedIn || !_authToken) return Promise.resolve([]);
+  
+  return api('/v1/shop/lottery/logs?limit=20').then(function(r) {
+    if (r && r.ok !== false && r.data && r.data.logs) {
+      _lotteryLogsCache = r.data.logs;
+      return r.data.logs;
+    }
+    return [];
+  }).catch(function(err) {
+    console.error('[loadLotteryLogsFromAPI]', err);
+    return [];
+  });
+}
+
 function lotteryInit(){
   var pg=$('prize-grid');if(!pg)return;
-  pg.innerHTML=PRIZES.map(function(p){
-    return '<div class="prize-card" data-prize-id="'+p.id+'">'
-      +'<div class="prize-card-icon">'+p.icon+'</div>'
-      +'<div class="prize-card-name">'+p.name+'</div>'
-      +'<div class="prize-card-brand">'+p.brand+'</div>'
-      +'<div class="prize-card-rarity '+p.rarityClass+'">'+p.rarityLabel+'</div>'
-      +'<div class="prize-card-odds">中獎率 '+p.odds+'%</div>'
+  
+  // 嘗試從 API 載入獎品
+  var prizes = await loadLotteryPrizesFromAPI();
+  
+  // 轉換為前端格式
+  var html = prizes.map(function(p, idx) {
+    var rarityClass = {
+      'common': 'rarity-common',
+      'uncommon': 'rarity-uncommon', 
+      'rare': 'rarity-rare',
+      'epic': 'rarity-epic',
+      'legendary': 'rarity-legendary'
+    }[p.rarity] || 'rarity-common';
+    
+    var rarityLabel = {
+      'common': '常見',
+      'uncommon': '普通',
+      'rare': '稀有',
+      'epic': '超稀有',
+      'legendary': '傳說'
+    }[p.rarity] || '普通';
+    
+    var icon = p.key === '全家_50' ? '🏪' :
+               p.key === '全家_100' ? '🏪' :
+               p.key === 'momo_150' ? '🛒' :
+               p.key === 'starbucks' ? '☕' :
+               p.key === 'momo_300' ? '🛒' :
+               p.key === 'gem_50' ? '💎' :
+               p.key === 'ps500' ? '🎮' :
+               p.key === 'pro_month' ? '⚡' : '🎁';
+    
+    return '<div class="prize-card" data-prize-id="'+idx+'">'
+      +'<div class="prize-card-icon">'+icon+'</div>'
+      +'<div class="prize-card-name">'+(p.name||'獎品')+'</div>'
+      +'<div class="prize-card-brand">'+(p.description||'')+'</div>'
+      +'<div class="prize-card-rarity '+rarityClass+'">'+rarityLabel+'</div>'
+      +'<div class="prize-card-odds">中獎率 '+(p.weight||1)+'%</div>'
       +'<button type="button" class="prize-detail-btn">查看詳情</button>'
       +'</div>';
   }).join('');
+  
+  pg.innerHTML = html;
+  
+  // 設定 lotteryState 的獎品映射
+  lotteryState.prizes = prizes;
+  
   var tc=$('lottery-ticket-count');
   lotteryState.tickets = userInventory.ticket || 0;
   if(tc)tc.textContent=lotteryState.tickets+' 張';
   lotteryShowStep(1);
 }
 function lotterySelectPrize(id){
-  var p=PRIZES[id];if(!p)return;
-  lotteryState.selectedPrize=p;
-  lotteryState.pullCount=1;
+  // 支援 API 或本地 PRIZES
+  var prizes = lotteryState.prizes || PRIZES;
+  var p = prizes[id];
+  if (!p) return;
+  
+  // 轉換格式
+  var icon = p.icon || (p.key === '全家_50' ? '🏪' : p.key === 'gem_50' ? '💎' : p.key === 'pro_month' ? '⚡' : '🎁');
+  var rarityClass = p.rarityClass || 'rarity-' + (p.rarity || 'common');
+  var rarityLabel = p.rarityLabel || '普通';
+  var odds = p.odds || p.weight || 1;
+  var pity = p.pity || 10;
+  var name = p.name || '獎品';
+  var brand = p.brand || p.description || '';
+  
+  lotteryState.selectedPrize = Object.assign({}, p, { icon: icon, odds: odds, pity: pity });
+  lotteryState.pullCount = 1;
   document.querySelectorAll('.prize-card').forEach(function(card){ card.classList.toggle('selected', Number(card.dataset.prizeId)===Number(id)); });
   lotterySetPull(1);
   // Update selected card
   var sc=$('lottery-selected-card');
   if(sc){
-    sc.innerHTML='<div style="font-size:3rem;margin-bottom:10px">'+p.icon+'</div>'
-      +'<div style="font-size:1rem;font-weight:700;color:var(--text);margin-bottom:4px">'+p.name+'</div>'
-      +'<div style="font-size:.75rem;color:var(--muted);margin-bottom:8px">'+p.brand+'</div>'
-      +'<div class="'+p.rarityClass+'" style="display:inline-block;padding:3px 10px;border-radius:20px;font-size:.72rem;font-weight:700;margin-bottom:12px">'+p.rarityLabel+'</div>'
-      +'<div style="font-size:.8rem;color:var(--muted)">單次中獎率 <strong style="color:'+p.color+'">'+p.odds+'%</strong></div>'
-      +'<div style="font-size:.75rem;color:var(--muted);margin-top:6px">🔒 保底 '+p.pity+' 次必中</div>'
+    sc.innerHTML='<div style="font-size:3rem;margin-bottom:10px">'+icon+'</div>'
+      +'<div style="font-size:1rem;font-weight:700;color:var(--text);margin-bottom:4px">'+name+'</div>'
+      +'<div style="font-size:.75rem;color:var(--muted);margin-bottom:8px">'+brand+'</div>'
+      +'<div class="'+rarityClass+'" style="display:inline-block;padding:3px 10px;border-radius:20px;font-size:.72rem;font-weight:700;margin-bottom:12px">'+rarityLabel+'</div>'
+      +'<div style="font-size:.8rem;color:var(--muted)">單次中獎率 <strong style="color:var(--gold)">'+odds+'%</strong></div>'
+      +'<div style="font-size:.75rem;color:var(--muted);margin-top:6px">🔒 保底 '+pity+' 次必中</div>'
       +'<div style="margin-top:14px;padding:12px 14px;background:var(--card2);border:1px solid var(--border);border-radius:12px;text-align:left;line-height:1.8">'
       +'<div style="font-size:.8rem;font-weight:800;color:var(--text);margin-bottom:6px">獎項說明</div>'
       +'<div style="font-size:.74rem;color:var(--muted)">'+(p.desc||'中獎後將由平台發送對應獎勵或兌換資訊。')+'</div>'
@@ -6477,16 +6600,30 @@ function claimAward(id){
   renderAwards();
 }
 
-function lotteryRenderHistory(){
+async function lotteryRenderHistory(){
   var el = document.getElementById('prize-history');
   if(!el) return;
-  el.innerHTML = PRIZE_HISTORY.map(function(h){
-    return '<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--border);font-size:.72rem;">'+
-      '<span style="color:var(--muted);">'+h.user+'</span>'+
-      '<span style="font-weight:600;">'+h.prize+'</span>'+
-      '<span style="color:var(--muted);">'+h.time+'</span>'+
-    '</div>';
-  }).join('');
+  
+  // 嘗試從 API 載入
+  var logs = await loadLotteryLogsFromAPI();
+  
+  if (logs && logs.length > 0) {
+    el.innerHTML = logs.map(function(l){
+      return '<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--border);font-size:.72rem;">'+
+        '<span style="color:var(--muted);">你</span>'+
+        '<span style="font-weight:600;">'+(l.prize?.name || '獎品')+'</span>'+
+        '<span style="color:var(--muted);">'+timeAgo(l.drawn_at)+'</span>'+
+      '</div>';
+    }).join('');
+  } else {
+    el.innerHTML = PRIZE_HISTORY.map(function(h){
+      return '<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px solid var(--border);font-size:.72rem;">'+
+        '<span style="color:var(--muted);">'+h.user+'</span>'+
+        '<span style="font-weight:600;">'+h.prize+'</span>'+
+        '<span style="color:var(--muted);">'+h.time+'</span>'+
+      '</div>';
+    }).join('');
+  }
 }
 function lotteryDoPull(){
   const p=lotteryState.selectedPrize;if(!p){showToast('請先選擇獎品');return;}
@@ -7434,13 +7571,6 @@ function setNotifFilter(filter,btn){
   if(btn)btn.classList.add('active');
   renderNotifList();
 }
-function markAllRead(){
-  NOTIFS.forEach(function(n){n.u=false;});
-  updateNotifBadge();
-  renderNotifList();
-  showToast('已全部標為已讀');
-}
-
 function notifDayLabel(tm){
   if(!tm) return '較早通知';
   if(/剛剛|分鐘前|小時前/.test(tm)) return '今天';
