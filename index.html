@@ -3781,7 +3781,7 @@ button, [onclick], [data-opendetail], [data-cat], [data-filter],
         </div>
         <div class="settings-group">
           <div class="sg-title">通知設定</div>
-                    <div class="sg-row"><span>PRO 結果通知 <span class="pro-notif-badge">⚡ PRO</span></span><div class="toggle-sw active" id="pro-notif-toggle" onclick="this.classList.toggle('active');showToast(this.classList.contains('active')?'✅ 結果通知已開啟':'已關閉結果通知')"><div class="toggle-dot"></div></div></div>
+                    <div class="sg-row"><span>PRO 結果通知 <span class="pro-notif-badge">⚡ PRO</span></span><div class="toggle-sw active" id="pro-notif-toggle" onclick="toggleProNotif(this)"><div class="toggle-dot"></div></div></div>
           <div class="sg-row"><span>開獎結果通知</span><div class="toggle-sw active" onclick="this.classList.toggle('active')"><div class="toggle-dot"></div></div></div>
                     <div class="sg-row">
             <span>🔔 推播通知 <span style="font-size:.68rem;color:var(--muted)">(結果 / 截止)</span></span>
@@ -5318,6 +5318,111 @@ function doTrade(){
 // ══════════════════════════════════════════
 function lbHTML(data){return data.map((d,i)=>`<div class="lb-row${d.me?' lb-me':''}"><div class="lb-rank ${['gold','silver','bronze'][i]||''}">${i<3?['🥇','🥈','🥉'][i]:i+1}</div><div class="lb-av" style="background:${d.c}20;color:${d.c}">${d.a}</div><div class="lb-info"><div class="lb-name">${d.n}</div><div class="lb-sub">積分 ${d.pts}</div></div><div style="text-align:right"><div class="lb-pval">${d.pr}</div></div></div>`).join('');}
 
+// 載入設定頁面資料
+function loadSettingsPage() {
+  if (!isLoggedIn || !_authToken) return;
+  
+  // 從 users/me API 獲取資料更新設定頁面
+  api('/v1/users/me').then(function(r) {
+    if (!r.ok || !r.data) return;
+    var u = r.data;
+    
+    // 更新顯示名稱
+    var nameEl = document.querySelector('#dtab-settings .sg-row:first-child .sg-val');
+    if (nameEl && u.username) {
+      nameEl.textContent = u.username;
+    }
+    
+    // 更新 email
+    var emailEl = document.querySelector('#dtab-settings .settings-group:first-child .sg-row:nth-child(2) .sg-val');
+    if (emailEl && u.email) {
+      var email = u.email;
+      emailEl.textContent = email.substring(0, 3) + '***@' + email.split('@')[1];
+    }
+    
+    // 更新 PRO 狀態
+    if (u.pro && u.pro.is_pro) {
+      var proEl = document.querySelector('#dtab-settings .pro-badge');
+      if (proEl) proEl.textContent = '⚡ PRO';
+      
+      var expiryEl = document.querySelector('#dtab-settings .settings-group:first-child .sg-row:nth-child(4) .sg-val');
+      if (expiryEl && u.pro.expires_at) {
+        expiryEl.textContent = new Date(u.pro.expires_at).toLocaleDateString('zh-TW');
+      }
+    }
+    
+    // 更新通知設定
+    if (u.pro && u.pro.notif_enabled !== undefined) {
+      var proNotifToggle = document.getElementById('pro-notif-toggle');
+      if (proNotifToggle) {
+        proNotifToggle.classList.toggle('active', u.pro.notif_enabled);
+      }
+    }
+  }).catch(function(err) {
+    console.error('[loadSettingsPage]', err);
+  });
+}
+
+// 儲存設定（用於未來擴展）
+async function saveSettings(settings) {
+  if (!isLoggedIn || !_authToken) {
+    showToast('請先登入', 'err');
+    return;
+  }
+  
+  try {
+    var result = await api('/v1/users/me', {
+      method: 'PATCH',
+      body: settings
+    });
+    
+    if (result && result.ok !== false) {
+      showToast('設定已儲存');
+      return true;
+    } else {
+      throw new Error(result?.error?.message || '儲存失敗');
+    }
+  } catch(err) {
+    console.error('[saveSettings]', err);
+    showToast('❌ ' + (err.message || '儲存失敗'), 'err');
+    return false;
+  }
+}
+
+// 切換 PRO 結果通知
+async function toggleProNotif(btn) {
+  if (!isLoggedIn) {
+    showToast('請先登入', 'err');
+    return;
+  }
+  
+  var isActive = btn.classList.contains('active');
+  var newValue = !isActive;
+  
+  // 先樂觀更新 UI
+  btn.classList.toggle('active', newValue);
+  
+  try {
+    var result = await api('/v1/users/me', {
+      method: 'PATCH',
+      body: { pro_notif_enabled: newValue }
+    });
+    
+    if (result && result.ok !== false) {
+      showToast(newValue ? '✅ 結果通知已開啟' : '已關閉結果通知');
+    } else {
+      // API 失敗還原
+      btn.classList.toggle('active', isActive);
+      throw new Error(result?.error?.message || '儲存失敗');
+    }
+  } catch(err) {
+    console.error('[toggleProNotif]', err);
+    // 失敗還原
+    btn.classList.toggle('active', isActive);
+    showToast('❌ 儲存失敗，請稍後再試', 'err');
+  }
+}
+
 function renderDashData(){
   const mini=$('lb-mini');if(mini)mini.innerHTML=lbHTML(LB.slice(0,5));
   const lbp=$('lb-profit');if(lbp)lbp.innerHTML=lbHTML(LB);
@@ -5360,6 +5465,10 @@ function goDashTab(id){
   if(id==='checkin')checkinInit();
   if(id==='tasks')tasksInit();
   if(id==='notif')renderNotifList();
+  if(id==='settings'){
+    // 載入用戶資料到設定頁面
+    loadSettingsPage();
+  }
   if(id==='leaderboard'){
     // 載入排行榜
     loadLeaderboardFromAPI(true, 'score');
@@ -7491,13 +7600,43 @@ function showIOSInstallHint() {
 
 // Browser Push Notification
 function requestPushPermission() {
-  if(!('Notification' in window)) return;
+  if(!('Notification' in window)) {
+    showToast('此瀏覽器不支援推播通知', 'info');
+    return;
+  }
+  
   Notification.requestPermission().then(function(perm){
     if(perm === 'granted') {
+      // 儲存到後端
+      if (isLoggedIn && _authToken) {
+        api('/v1/notifications/push-subscribe', {
+          method: 'POST',
+          body: { 
+            enabled: true,
+            permission: perm
+          }
+        }).then(function(r) {
+          if (r && r.ok !== false) {
+            showToast('✅ 已開啟通知！預測結果會即時推播');
+          }
+        }).catch(function(err) {
+          console.error('[push-subscribe]', err);
+        });
+      }
       showToast('✅ 已開啟通知！預測結果會即時推播');
       updatePushToggleUI(true);
     } else {
+      // 通知被拒絕，告知後端
+      if (isLoggedIn && _authToken) {
+        api('/v1/notifications/push-unsubscribe', {
+          method: 'POST',
+          body: { reason: 'permission_denied' }
+        }).catch(function(err) {
+          console.error('[push-unsubscribe]', err);
+        });
+      }
       showToast('通知已拒絕，可至設定頁重新開啟', 'info');
+      updatePushToggleUI(false);
     }
   });
 }
