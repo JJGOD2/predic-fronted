@@ -3014,6 +3014,7 @@ button, [onclick], [data-opendetail], [data-cat], [data-filter],
       </div>
       <div class="toolbar">
         <div class="toolbar-title" id="mkt-title">全部市場</div>
+        <button class="btn-propose" onclick="showProposeModal()" style="background:var(--green);color:var(--dark);border:none;padding:8px 16px;border-radius:8px;font-weight:700;cursor:pointer;margin-right:8px;">➕ 提案預測</button>
         <select class="sort-sel" id="mkt-sort" onchange="mktPage=1;renderMarkets()"><option value="volume">熱門排序</option><option value="yes">是機率高</option><option value="no">否機率低</option></select>
         <div class="view-btns">
           <button class="view-btn active" id="vbtn-grid" data-view="grid" title="格子視圖">⊞</button>
@@ -8432,6 +8433,81 @@ syncDesktopNav();
     goPage('landing');
   });
 })();
+
+// 提案預測功能
+function showProposeModal() {
+  if (!isLoggedIn) {
+    goPage('auth');
+    showToast('請先登入才能提案', 'err');
+    return;
+  }
+  var modal = document.getElementById('proposeModal');
+  if (modal) {
+    modal.style.display = 'flex';
+    // 設定預設截止時間為 7 天後
+    var defaultDate = new Date();
+    defaultDate.setDate(defaultDate.getDate() + 7);
+    var defaultStr = defaultDate.toISOString().slice(0, 16);
+    document.getElementById('propose-endsat').value = defaultStr;
+  }
+}
+
+function closeProposeModal() {
+  var modal = document.getElementById('proposeModal');
+  if (modal) modal.style.display = 'none';
+}
+
+async function submitPropose() {
+  var question = document.getElementById('propose-question').value.trim();
+  var category = document.getElementById('propose-category').value;
+  var description = document.getElementById('propose-description').value.trim();
+  var endsAt = document.getElementById('propose-endsat').value;
+  
+  if (!question) {
+    showToast('請輸入預測題目', 'err');
+    return;
+  }
+  if (question.length < 5) {
+    showToast('題目至少需要 5 個字', 'err');
+    return;
+  }
+  if (!category) {
+    showToast('請選擇類別', 'err');
+    return;
+  }
+  if (!endsAt) {
+    showToast('請設定截止時間', 'err');
+    return;
+  }
+  
+  try {
+    var result = await api('/v1/markets', {
+      method: 'POST',
+      body: {
+        question: question,
+        category: category,
+        description: description,
+        endsAt: endsAt
+      }
+    });
+    
+    if (result && result.ok !== false) {
+      showToast('✅ 提案成功！等待審核', 'gold');
+      closeProposeModal();
+      // 清空表單
+      document.getElementById('propose-question').value = '';
+      document.getElementById('propose-category').value = '';
+      document.getElementById('propose-description').value = '';
+      // 重新載入市場列表
+      if (typeof loadMarketsFromAPI === 'function') loadMarketsFromAPI(true);
+    } else {
+      throw new Error(result?.error?.message || '提案失敗');
+    }
+  } catch (err) {
+    console.error('[submitPropose]', err);
+    showToast('❌ ' + (err.message || '提案失敗，請稍後再試'), 'err');
+  }
+}
 </script>
 
 
@@ -8607,6 +8683,48 @@ body.landing-ticker #main-nav{
   <button onclick="hideInstallBanner()" style="background:none;border:none;color:rgba(255,255,255,.35);
     font-size:1.1rem;cursor:pointer;padding:4px;flex-shrink:0">✕</button>
 </div>
+
+  <!-- 提案預測 Modal -->
+  <div class="modal-overlay" id="proposeModal" style="display:none">
+    <div class="modal" style="max-width:420px">
+      <button class="modal-close" onclick="closeProposeModal()">✕</button>
+      <div class="modal-title">提案新預測</div>
+      <div class="modal-sub">建立一個新的預測市場</div>
+      
+      <div style="margin-top:16px">
+        <label style="font-size:.78rem;color:var(--muted);display:block;margin-bottom:4px">預測題目 *</label>
+        <input type="text" id="propose-question" placeholder="例如：2026年台灣GDP成長超過3%？" 
+          style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text)">
+      </div>
+      
+      <div style="margin-top:12px">
+        <label style="font-size:.78rem;color:var(--muted);display:block;margin-bottom:4px">類別 *</label>
+        <select id="propose-category" style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text)">
+          <option value="">選擇類別</option>
+          <option value="politics">🏛 政治</option>
+          <option value="finance">📈 財經</option>
+          <option value="sports">⚽ 運動</option>
+          <option value="entertainment">🎬 娛樂</option>
+          <option value="tech">💻 科技</option>
+          <option value="society">🌏 社會</option>
+        </select>
+      </div>
+      
+      <div style="margin-top:12px">
+        <label style="font-size:.78rem;color:var(--muted);display:block;margin-bottom:4px">補充說明</label>
+        <textarea id="propose-description" placeholder="補充說明（選填）" 
+          style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text);resize:vertical;min-height:60px"></textarea>
+      </div>
+      
+      <div style="margin-top:12px">
+        <label style="font-size:.78rem;color:var(--muted);display:block;margin-bottom:4px">截止時間 *</label>
+        <input type="datetime-local" id="propose-endsat" 
+          style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--text)">
+      </div>
+      
+      <button class="submit-btn" onclick="submitPropose()" style="margin-top:20px">提交提案</button>
+    </div>
+  </div>
 
 </body>
 </html>
