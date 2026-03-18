@@ -4559,6 +4559,8 @@ function goPage(id){
         el.offsetHeight; // trigger reflow
         el.style.animation = null;
       });
+      // 初始化跑馬燈
+      if(typeof initLanding === 'function') initLanding();
     }, 10);
   }
   document.querySelectorAll('.nav-link').forEach(l=>l.classList.remove('active'));
